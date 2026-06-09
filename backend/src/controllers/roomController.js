@@ -2,6 +2,7 @@ import { Room } from "../models/Room.js";
 import { RoomParticipant } from "../models/RoomParticipant.js";
 import { User } from "../models/User.js";
 import { RoomDocument } from "../models/RoomDocument.js";
+import { RoomMessage } from "../models/RoomMessage.js";
 
 /**
  * HTTP STATUS CODES:
@@ -241,4 +242,42 @@ const getRoomDetails = async (req, res) => {
   }
 };
 
-export { createRoom, joinRoom, getMyRooms, getRoomDetails };
+const getRoomMessages = async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const userId = req.user.id;
+
+    const isParticipant = await RoomParticipant.findOne({
+      where: { room_id: roomId, user_id: userId },
+    });
+
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: "Not a member of this room" });
+    }
+
+    const messages = await RoomMessage.findAll({
+      where: { room_id: roomId },
+      order: [["createdAt", "ASC"]],
+      limit: 100,
+    });
+
+    const formatted = messages.map((m) => ({
+      id: m.id.toString(),
+      userId: m.user_id,
+      username: m.username,
+      content: m.content,
+      timestamp: m.createdAt.toISOString(),
+      color: m.color,
+    }));
+
+    res.status(200).json({ success: true, data: { messages: formatted } });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch messages",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+export { createRoom, joinRoom, getMyRooms, getRoomDetails, getRoomMessages };

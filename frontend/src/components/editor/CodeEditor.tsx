@@ -1,20 +1,34 @@
 import { Editor, OnMount } from "@monaco-editor/react";
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useCollaboration } from "@/hooks/useCollaboration.ts";
 import { useCursors } from "@/hooks/useCursors.ts";
 import { useSocket } from "@/contexts/SocketContext.tsx";
 import type { editor } from "monaco-editor";
 
+const LANGUAGE_LABELS: Record<string, string> = {
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  python: "Python",
+  java: "Java",
+  cpp: "C++",
+  c: "C",
+  html: "HTML",
+  css: "CSS",
+  json: "JSON",
+};
+
 interface CodeEditorProps {
   selectedFile?: string;
   language?: string;
   roomId?: string;
+  onGetCodeRef?: (fn: () => string) => void;
 }
 
 const CodeEditor = ({
   selectedFile = "main.js",
   language = "javascript",
   roomId,
+  onGetCodeRef,
 }: CodeEditorProps) => {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
@@ -30,7 +44,7 @@ const CodeEditor = ({
 
   useCursors(isEditorReady ? editorRef.current : null, roomId);
 
-  const handleEditorDidMount: OnMount = (editor, monaco) => {
+  const handleEditorDidMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
 
@@ -41,8 +55,13 @@ const CodeEditor = ({
       });
     });
 
+    // Expose getCode to parent (for TerminalPanel run)
+    if (onGetCodeRef) {
+      onGetCodeRef(() => editor.getValue());
+    }
+
     setIsEditorReady(true);
-  };
+  }, [onGetCodeRef]);
 
   return (
     <div className="flex-1 flex flex-col bg-editor-bg overflow-hidden">
@@ -54,9 +73,10 @@ const CodeEditor = ({
       </div>
 
       <div className="flex-1 overflow-hidden">
+        {/* key={language} remounts editor when language changes so syntax highlighting updates */}
         <Editor
+          key={language}
           height="100%"
-          defaultLanguage={language}
           language={language}
           onMount={handleEditorDidMount}
           theme="vs-dark"
@@ -81,14 +101,12 @@ const CodeEditor = ({
       {/* Status bar */}
       <div className="h-6 bg-card border-t border-border flex items-center justify-between px-3 text-xs text-muted-foreground">
         <div className="flex items-center gap-4">
-          <span>{language === "javascript" ? "JavaScript" : language}</span>
+          <span>{LANGUAGE_LABELS[language] ?? language}</span>
           <span>UTF-8</span>
           <span>LF</span>
         </div>
         <div className="flex items-center gap-4">
-          <span>
-            Ln {cursorPosition.line}, Col {cursorPosition.column}
-          </span>
+          <span>Ln {cursorPosition.line}, Col {cursorPosition.column}</span>
           <span>{activeUsers.length} active user{activeUsers.length !== 1 ? "s" : ""}</span>
         </div>
       </div>

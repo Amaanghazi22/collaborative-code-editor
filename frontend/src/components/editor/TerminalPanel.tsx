@@ -6,87 +6,137 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs.tsx";
-import { Terminal, X, Play } from "lucide-react";
-import { useState } from "react";
+import { Terminal, X, Play, Trash2 } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
 
 interface TerminalPanelProps {
   onClose: () => void;
+  language?: string;
+  getCode?: () => string;
+  onRunTriggerRef?: (fn: () => void) => void;
 }
 
-const TerminalPanel = ({ onClose }: TerminalPanelProps) => {
-  const [terminalOutput, setTerminalOutput] = useState(`$ npm start
+const JUDGE0_LANGUAGE_IDS: Record<string, number> = {
+  javascript: 63,
+  typescript: 74,
+  python: 71,
+  java: 62,
+  cpp: 54,
+  c: 50,
+  html: 41,
+  css: 41,
+  json: 41,
+};
 
-> collab-code@1.0.0 start
-> react-scripts start
+const JUDGE0_URL = import.meta.env.VITE_JUDGE0_URL?.replace(/\/$/, "");
+const JUDGE0_KEY = import.meta.env.VITE_JUDGE0_API_KEY;
+// Only send RapidAPI headers when using the hosted service (key present).
+// Self-hosted Judge0 (localhost or Render) needs no auth headers.
+const rapidApiHeaders: Record<string, string> = JUDGE0_KEY
+  ? { "X-RapidAPI-Key": JUDGE0_KEY, "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com" }
+  : {};
 
-Starting development server...
-Compiled successfully!
+interface OutputLine {
+  text: string;
+  type: "info" | "success" | "error" | "log";
+}
 
-You can now view collab-code in the browser.
+const TerminalPanel = ({ onClose, language = "javascript", getCode, onRunTriggerRef }: TerminalPanelProps) => {
+  const [outputLines, setOutputLines] = useState<OutputLine[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
 
-  Local:            http://localhost:3000
-  On Your Network:  http://192.168.1.5:3000
+  const addLine = (text: string, type: OutputLine["type"] = "log") => {
+    setOutputLines((prev) => [...prev, { text, type }]);
+  };
 
-Note that the development build is not optimized.
-To create a production build, use npm run build.
+  const handleRunCode = useCallback(async () => {
+    if (isRunning) return;
 
-webpack compiled successfully`);
+    const code = getCode?.() ?? "";
+    if (!code.trim()) {
+      addLine("Nothing to run — editor is empty.", "info");
+      return;
+    }
 
-  const [consoleOutput, setConsoleOutput] =
-    useState(`[LOG] Application initialized
-[INFO] WebSocket connected to session
-[LOG] 3 users are active in this session
-[INFO] Code synchronized successfully`);
+    if (!JUDGE0_URL) {
+      addLine(
+        "Code execution not configured. Set VITE_JUDGE0_URL in .env (e.g. http://localhost:2358)",
+        "error"
+      );
+      return;
+    }
 
-  const handleRunCode = async () => {
-    const timestamp = new Date().toLocaleTimeString();
-    setTerminalOutput(
-      (prev) => `${prev}\n\n[${timestamp}] Submitting code to Judge0 API...`
-    );
+    setIsRunning(true);
+    const langId = JUDGE0_LANGUAGE_IDS[language] ?? 63;
+    addLine(`▶ Running ${language}...`, "info");
 
-    // TODO: Replace with actual Judge0 API call
-    // Example Judge0 API integration:
-    //
-    // const JUDGE0_API_URL = 'https://judge0-ce.p.rapidapi.com/submissions';
-    // const JUDGE0_API_KEY = 'YOUR_RAPIDAPI_KEY'; // Store in environment variable
-    //
-    // const response = await fetch(`${JUDGE0_API_URL}?base64_encoded=false&wait=true`, {
-    //   method: 'POST',
-    //   headers: {
-    //     'content-type': 'application/json',
-    //     'X-RapidAPI-Key': JUDGE0_API_KEY,
-    //     'X-RapidAPI-Host': 'judge0-ce.p.rapidapi.com'
-    //   },
-    //   body: JSON.stringify({
-    //     source_code: codeContent, // Get from Monaco editor
-    //     language_id: getLanguageId(language), // Map language to Judge0 ID
-    //     stdin: "",
-    //     cpu_time_limit: 2,
-    //     memory_limit: 128000
-    //   })
-    // });
-    //
-    // const result = await response.json();
-    //
-    // Language ID mapping for Judge0:
-    // JavaScript: 63, Python: 71, Java: 62, C++: 54, C: 50, etc.
+    try {
+      const submitRes = await fetch(`${JUDGE0_URL}/submissions?base64_encoded=false&wait=false`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...rapidApiHeaders,
+        },
+        body: JSON.stringify({
+          source_code: code,
+          language_id: langId,
+          stdin: "",
+          cpu_time_limit: 5,
+          memory_limit: 128000,
+        }),
+      });
 
-    // Mock execution for UI demonstration
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (!submitRes.ok) throw new Error(`Submit failed: ${submitRes.status}`);
+      const { token } = await submitRes.json();
 
-    setTerminalOutput(
-      (prev) =>
-        `${prev}\n[${timestamp}] Compilation successful ✓\n[${timestamp}] Execution completed in 0.123s`
-    );
-    setConsoleOutput(
-      (prev) =>
-        `${prev}\n[${timestamp}] Output:\nHello, World!\n[${timestamp}] Exit code: 0`
-    );
+      // Poll for result
+      let result = null;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const pollRes = await fetch(
+          `${JUDGE0_URL}/submissions/${token}?base64_encoded=false`,
+          {
+            headers: { ...rapidApiHeaders },
+          }
+        );
+        result = await pollRes.json();
+        if (result.status?.id > 2) break; // done (not In Queue / Processing)
+      }
+
+      if (!result) throw new Error("Timed out waiting for result");
+
+      if (result.stdout) addLine(result.stdout.trimEnd(), "success");
+      if (result.stderr) addLine(result.stderr.trimEnd(), "error");
+      if (result.compile_output) addLine(result.compile_output.trimEnd(), "error");
+
+      const statusDesc = result.status?.description ?? "Unknown";
+      const time = result.time ? ` in ${result.time}s` : "";
+      const mem = result.memory ? `, ${Math.round(result.memory / 1024)}KB` : "";
+      addLine(`✓ ${statusDesc}${time}${mem}`, result.status?.id === 3 ? "success" : "error");
+    } catch (err) {
+      addLine(`Error: ${err instanceof Error ? err.message : String(err)}`, "error");
+    } finally {
+      setIsRunning(false);
+    }
+  }, [isRunning, language, getCode]);
+
+  // Expose run function to parent so header Run button can trigger it
+  useEffect(() => {
+    if (onRunTriggerRef) onRunTriggerRef(handleRunCode);
+  }, [onRunTriggerRef, handleRunCode]);
+
+  const colorClass = (type: OutputLine["type"]) => {
+    switch (type) {
+      case "success": return "text-green-400";
+      case "error": return "text-red-400";
+      case "info": return "text-blue-400";
+      default: return "text-foreground";
+    }
   };
 
   return (
     <div className="h-64 border-t border-border bg-card flex flex-col">
-      <Tabs defaultValue="terminal" className="flex-1 flex flex-col">
+      <Tabs defaultValue="output" className="flex-1 flex flex-col">
         <div className="h-9 border-b border-border flex items-center justify-between px-3">
           <TabsList className="h-7 bg-transparent p-0 gap-1">
             <TabsTrigger
@@ -102,12 +152,6 @@ webpack compiled successfully`);
             >
               Output
             </TabsTrigger>
-            <TabsTrigger
-              value="console"
-              className="h-7 px-3 text-xs data-[state=active]:bg-secondary"
-            >
-              Console
-            </TabsTrigger>
           </TabsList>
 
           <div className="flex items-center gap-1">
@@ -116,9 +160,19 @@ webpack compiled successfully`);
               size="icon"
               className="h-6 w-6"
               onClick={handleRunCode}
+              disabled={isRunning}
               title="Run code"
             >
-              <Play className="h-3 w-3" />
+              <Play className={`h-3 w-3 ${isRunning ? "animate-pulse" : ""}`} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => setOutputLines([])}
+              title="Clear output"
+            >
+              <Trash2 className="h-3 w-3" />
             </Button>
             <Button
               variant="ghost"
@@ -133,26 +187,33 @@ webpack compiled successfully`);
 
         <TabsContent value="terminal" className="flex-1 m-0">
           <ScrollArea className="h-full">
-            <pre className="p-3 font-mono text-xs text-foreground whitespace-pre-wrap">
-              {terminalOutput}
-              <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1" />
-            </pre>
+            <div className="p-3 font-mono text-xs text-muted-foreground">
+              <p>Interactive terminal not available in browser.</p>
+              <p className="mt-1">Use the Output tab to run code via the ▶ button.</p>
+            </div>
           </ScrollArea>
         </TabsContent>
 
         <TabsContent value="output" className="flex-1 m-0">
           <ScrollArea className="h-full">
-            <div className="p-3 font-mono text-xs text-muted-foreground">
-              No output yet. Run your code to see the results here.
-            </div>
-          </ScrollArea>
-        </TabsContent>
-
-        <TabsContent value="console" className="flex-1 m-0">
-          <ScrollArea className="h-full">
-            <pre className="p-3 font-mono text-xs text-foreground whitespace-pre-wrap">
-              {consoleOutput}
-            </pre>
+            {outputLines.length === 0 ? (
+              <div className="p-3 font-mono text-xs text-muted-foreground">
+                {JUDGE0_URL
+                  ? "Press ▶ to run your code."
+                  : "Code execution requires VITE_JUDGE0_URL + VITE_JUDGE0_API_KEY in .env — press ▶ for details."}
+              </div>
+            ) : (
+              <pre className="p-3 font-mono text-xs whitespace-pre-wrap">
+                {outputLines.map((line, i) => (
+                  <span key={i} className={`block ${colorClass(line.type)}`}>
+                    {line.text}
+                  </span>
+                ))}
+                {isRunning && (
+                  <span className="inline-block w-2 h-3.5 bg-primary animate-pulse ml-1" />
+                )}
+              </pre>
+            )}
           </ScrollArea>
         </TabsContent>
       </Tabs>

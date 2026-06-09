@@ -86,8 +86,8 @@ const startServer = async () => {
     // Test database connection
     await testConnection();
 
-    // Sync database models (creates tables)
-    await sequelize.sync({ alter: true }); // Use { force: true } to drop tables
+    // Create tables if they don't exist — never alters or drops existing tables
+    await sequelize.sync({ force: false });
 
     // Start listening (httpServer instead of app for Socket.io support)
     httpServer.listen(PORT, () => {

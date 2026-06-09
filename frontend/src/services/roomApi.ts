@@ -11,3 +11,6 @@ export const getMyRooms = () =>
 
 export const getRoomDetails = (roomId: string) =>
   apiRequest({ method: "get", url: `/api/rooms/${roomId}` });
+
+export const getRoomMessages = (roomId: string) =>
+  apiRequest({ method: "get", url: `/api/rooms/${roomId}/messages` });

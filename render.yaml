@@ -1,0 +1,61 @@
+databases:
+  - name: collab-editor-db
+    databaseName: collab_editor
+    user: collab_user
+    plan: free
+
+services:
+  # ── Backend API + WebSocket server ───────────────────────────────────────────
+  - type: web
+    name: collab-editor-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: node src/server.js
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRE
+        value: 7d
+      # FRONTEND_URL must match your Vercel deployment URL exactly.
+      # Update this after deploying the frontend to Vercel.
+      - key: FRONTEND_URL
+        value: https://collab-editor.vercel.app
+      - key: DB_HOST
+        fromDatabase:
+          name: collab-editor-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: collab-editor-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: collab-editor-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: collab-editor-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: collab-editor-db
+          property: password
+
+  # ── Judge0 CE — self-hosted code execution ───────────────────────────────────
+  # Render free tier runs x86 Linux so Judge0 works here (unlike Apple Silicon).
+  # This service uses the official Judge0 Docker image.
+  - type: web
+    name: collab-editor-judge0
+    runtime: docker
+    rootDir: judge0
+    plan: free
+    envVars:
+      - key: RAILS_ENV
+        value: production
+      - key: RACK_ENV
+        value: production
